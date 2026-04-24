@@ -25,6 +25,7 @@
 /* USER CODE BEGIN Includes */
 #include <math.h>
 #include <stdio.h>
+#include <stdarg.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -42,6 +43,7 @@
 #define GAIN_STEP    0.02f   /* quanto aumenta il volume ad ogni tick di TIM2      */
 #define GAIN_MAX     1.0f    /* volume massimo (piena scala DAC)                   */
 #define PAUSE_TICKS  10      /* tick di pausa silenziosa tra una frequenza e l'altra (10 × 100ms = 1s) */
+#define USE_PC_AUDIO 1       /* 1 = audio generato da script Python su PC via UART */
 
 /* USER CODE END PD */
 
@@ -97,6 +99,8 @@ static void fill_dac_buf(int half);
 static void start_tone(float freq);
 static void stop_tone(void);
 static void send_results(void);
+static void pc_audio_set_gain(float new_gain);
+static void uart_send_line(const char *fmt, ...);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -115,6 +119,27 @@ static void build_lut(void)
         float angle = 2.0f * (float)M_PI * i / N_SAMPLES;
         lut[i] = (uint16_t)((sinf(angle) + 1.0f) * 2047.5f);
     }
+}
+
+static void uart_send_line(const char *fmt, ...)
+{
+  char line[96];
+  va_list args;
+  va_start(args, fmt);
+  int len = vsnprintf(line, sizeof(line), fmt, args);
+  va_end(args);
+
+  if (len <= 0)
+  {
+    return;
+  }
+
+  if (len >= (int)sizeof(line))
+  {
+    len = (int)sizeof(line) - 1;
+  }
+
+  HAL_UART_Transmit(&huart1, (uint8_t *)line, len, HAL_MAX_DELAY);
 }
 
 /*
@@ -148,6 +173,9 @@ static void fill_dac_buf(int half)
  */
 static void start_tone(float freq)
 {
+#if USE_PC_AUDIO
+  uart_send_line("AUDIO START %.1f %.3f\r\n", freq, gain);
+#else
     uint32_t arr = (uint32_t)(SystemCoreClock / (freq * N_SAMPLES)) - 1;
     __HAL_TIM_SET_AUTORELOAD(&htim4, arr);
     __HAL_TIM_SET_COUNTER(&htim4, 0);
@@ -159,6 +187,7 @@ static void start_tone(float freq)
     HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1,
                       (uint32_t *)dac_buf, 2 * N_SAMPLES,
                       DAC_ALIGN_12B_R);
+  #endif
 }
 
 /*
@@ -167,8 +196,21 @@ static void start_tone(float freq)
  */
 static void stop_tone(void)
 {
+#if USE_PC_AUDIO
+  uart_send_line("AUDIO STOP\r\n");
+#else
     HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_1);
     HAL_TIM_Base_Stop(&htim4);
+#endif
+}
+
+static void pc_audio_set_gain(float new_gain)
+{
+#if USE_PC_AUDIO
+  uart_send_line("AUDIO GAIN %.3f\r\n", new_gain);
+#else
+  (void)new_gain;
+#endif
 }
 
 /*
@@ -180,6 +222,7 @@ static void stop_tone(void)
 static void send_results(void)
 {
     char line[64];
+  uart_send_line("AUDIO DONE\r\n");
     HAL_UART_Transmit(&huart1,
         (uint8_t *)"=== Risultati Audiometria ===\r\n", 31, HAL_MAX_DELAY);
 
@@ -223,14 +266,17 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_DMA_Init();
   MX_TIM2_Init();
-  MX_DAC1_Init();
   MX_USART1_UART_Init();
+#if !USE_PC_AUDIO
+  MX_DMA_Init();
+  MX_DAC1_Init();
   MX_TIM4_Init();
+#endif
   /* USER CODE BEGIN 2 */
 
     build_lut();
+    uart_send_line("AUDIO MODE PC\r\n");
     start_tone(FREQ[freq_idx]);
     HAL_TIM_Base_Start_IT(&htim2);  /* avvia il timer di controllo */
 
@@ -557,6 +603,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         {
             /* Nessuna risposta: aumenta il volume */
             gain += GAIN_STEP;
+          if (gain > GAIN_MAX)
+          {
+            gain = GAIN_MAX;
+          }
+          pc_audio_set_gain(gain);
+
             if (gain >= GAIN_MAX)
             {
                 /* Frequenza non percepita */
@@ -591,13 +643,21 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 /* DMA ha trasmesso la prima metà → aggiornala per il ciclo successivo */
 void HAL_DAC_ConvHalfCpltCallbackCh1(DAC_HandleTypeDef *hdac)
 {
+#if !USE_PC_AUDIO
     fill_dac_buf(0);
+#else
+  (void)hdac;
+#endif
 }
 
 /* DMA ha trasmesso la seconda metà → aggiornala per il ciclo successivo */
 void HAL_DAC_ConvCpltCallbackCh1(DAC_HandleTypeDef *hdac)
 {
+#if !USE_PC_AUDIO
     fill_dac_buf(1);
+#else
+  (void)hdac;
+#endif
 }
 
 /* Interrupt del pulsante (PC13, falling edge) → imposta solo il flag */

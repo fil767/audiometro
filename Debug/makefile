@@ -34,34 +34,34 @@ $(wildcard ../makefile.init) \
 $(wildcard ../makefile.targets) \
 
 
-BUILD_ARTIFACT_NAME := Audiometro
+BUILD_ARTIFACT_NAME := audiometro
 BUILD_ARTIFACT_EXTENSION := elf
 BUILD_ARTIFACT_PREFIX :=
 BUILD_ARTIFACT := $(BUILD_ARTIFACT_PREFIX)$(BUILD_ARTIFACT_NAME)$(if $(BUILD_ARTIFACT_EXTENSION),.$(BUILD_ARTIFACT_EXTENSION),)
 
 # Add inputs and outputs from these tool invocations to the build variables 
 EXECUTABLES += \
-Audiometro.elf \
+audiometro.elf \
 
 MAP_FILES += \
-Audiometro.map \
+audiometro.map \
 
 SIZE_OUTPUT += \
 default.size.stdout \
 
 OBJDUMP_LIST += \
-Audiometro.list \
+audiometro.list \
 
 
 # All Target
 all: main-build
 
 # Main-build Target
-main-build: Audiometro.elf secondary-outputs
+main-build: audiometro.elf secondary-outputs
 
 # Tool invocations
-Audiometro.elf Audiometro.map: $(OBJS) $(USER_OBJS) C:\Users\lored\STM32CubeIDE\workspace_1.19.0\Audiometro\STM32L475VGTX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "Audiometro.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"C:\Users\lored\STM32CubeIDE\workspace_1.19.0\Audiometro\STM32L475VGTX_FLASH.ld" --specs=nosys.specs -Wl,-Map="Audiometro.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -u _printf_float -u _scanf_float -Wl,--start-group -lc -lm -Wl,--end-group
+audiometro.elf audiometro.map: $(OBJS) $(USER_OBJS) C:\Users\Universita\Desktop\audiometro\STM32L475VGTX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "audiometro.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"C:\Users\Universita\Desktop\audiometro\STM32L475VGTX_FLASH.ld" --specs=nosys.specs -Wl,-Map="audiometro.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -u _printf_float -u _scanf_float -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 
@@ -70,14 +70,14 @@ default.size.stdout: $(EXECUTABLES) makefile objects.list $(OPTIONAL_TOOL_DEPS)
 	@echo 'Finished building: $@'
 	@echo ' '
 
-Audiometro.list: $(EXECUTABLES) makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-objdump -h -S $(EXECUTABLES) > "Audiometro.list"
+audiometro.list: $(EXECUTABLES) makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-objdump -h -S $(EXECUTABLES) > "audiometro.list"
 	@echo 'Finished building: $@'
 	@echo ' '
 
 # Other Targets
 clean:
-	-$(RM) Audiometro.elf Audiometro.list Audiometro.map default.size.stdout
+	-$(RM) audiometro.elf audiometro.list audiometro.map default.size.stdout
 	-@echo ' '
 
 secondary-outputs: $(SIZE_OUTPUT) $(OBJDUMP_LIST)
