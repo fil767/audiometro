@@ -1,123 +1,131 @@
-# Test Audiometrico con B-L475E-IOT01A (Versione Coerente al Firmware)
+# Test Audiometrico con B-L475E-IOT01A (Versione Coerente al Firmware Attuale)
 
 ## 1) Obiettivo del progetto
-Il progetto realizza un test audiometrico semplificato su scheda STM32 B-L475E-IOT01A.
-Per ogni frequenza audio di interesse, il sistema genera un tono sinusoidale e aumenta gradualmente il livello fino a quando l'utente segnala la percezione tramite pulsante.
-Il valore rilevato viene salvato come soglia uditiva relativa in dBFS.
+Il progetto realizza un test audiometrico didattico a soglia relativa.
+La scheda STM32 gestisce la logica del test (sequenza frequenze, temporizzazione, pulsante, salvataggio risultati), mentre la riproduzione audio avviene sul PC tramite script Python collegato su UART.
 
-Nel firmware attuale e implementato un solo ciclo di misura (un solo orecchio).
+Il risultato e una soglia per frequenza espressa in dBFS (non dB HL clinici).
 
 ## 2) Frequenze testate
-Le frequenze utilizzate sono:
+Le frequenze attualmente usate sono:
 - 125 Hz
 - 250 Hz
 - 500 Hz
+- 750 Hz
 - 1000 Hz
+- 1500 Hz
 - 2000 Hz
+- 3000 Hz
 - 4000 Hz
+- 6000 Hz
 - 8000 Hz
 
-Questi valori corrispondono alla banda tipica di un test audiometrico di base.
+Questa griglia e piu fitta rispetto alla versione iniziale e migliora la lettura della curva soglia.
 
-## 3) Architettura di generazione del segnale
-La generazione del tono si basa su 4 blocchi:
-- LUT sinusoidale (tabella campioni)
-- Timer audio TIM4
-- DMA (modalita circolare)
-- DAC1 canale 1 su pin PA4
+## 3) Architettura del sistema
+### 3.1 Ruolo della scheda STM32
+La scheda:
+- definisce frequenza corrente e livello corrente
+- gestisce il timer di controllo
+- legge il pulsante utente (PC13)
+- salva il valore soglia rilevato
+- invia comandi seriali al PC
 
-### 3.1 LUT
-Il segnale sinusoidale e campionato in una tabella di 128 campioni (N_SAMPLES = 128), con valori a 12 bit nel range 0..4095.
+### 3.2 Ruolo del PC (script Python)
+Lo script Python:
+- riceve i comandi seriali `AUDIO START`, `AUDIO GAIN`, `AUDIO STOP`, `AUDIO DONE`
+- genera il tono alla frequenza richiesta
+- aggiorna il volume in base al gain ricevuto
 
-Formula usata per ogni campione:
+In questa configurazione non e necessario uno stadio analogico esterno per cuffie.
 
-sample(i) = (sin(2*pi*i/N) + 1) * 2047.5
+## 4) Controllo del livello (dBFS)
+Il firmware lavora con una rampa in dBFS e converte in gain lineare per l'audio:
 
-La LUT e costruita una sola volta all'avvio.
+gain = 10^(dBFS/20)
 
-### 3.2 Timer audio e frequenza del tono
-TIM4 genera eventi periodici TRGO (update event).
-A ogni evento, il DMA invia un nuovo campione al DAC.
+Parametri attuali:
+- livello iniziale: -70 dBFS
+- incremento: +1 dB ogni tick di TIM2
+- limite massimo: -20 dBFS
 
-Con N campioni per periodo:
+Se l'utente non preme entro il limite, la frequenza e marcata come non percepita (`-100 dBFS` simbolico).
 
-f_audio = f_timer_update / N
+## 5) Temporizzazioni del test
+TIM2 e configurato con tick di circa 500 ms.
 
-Nel firmware, il registro ARR di TIM4 viene aggiornato a ogni cambio frequenza per ottenere la f_audio desiderata.
+Con questa scelta:
+- il livello cresce lentamente (1 dB ogni 500 ms)
+- la sensibilita al tempo di reazione dell'utente e ridotta
 
-### 3.3 DMA e double buffering
-Il buffer DMA contiene due meta buffer (2*N campioni).
-Quando il DMA completa una meta, la CPU aggiorna quella meta applicando il gain corrente.
-In questo modo l'audio resta continuo senza glitch evidenti.
+Tra due frequenze e prevista una pausa di circa 2 s.
 
-## 4) Controllo ampiezza (gain)
-La LUT base e a piena scala. L'ampiezza effettiva e controllata da un gain lineare:
+## 6) Macchina a stati (flusso operativo)
+1. Avvio frequenza corrente
+- invio `AUDIO START freq gain`
 
-sample_out = sample_lut * gain
+2. Attesa risposta
+- se pulsante premuto: salva soglia corrente in dBFS
+- se non premuto: aumenta livello e invia `AUDIO GAIN`
 
-Nel firmware attuale:
-- gain iniziale: 0.05
-- incremento periodico: 0.02
-- massimo: 1.0
+3. Caso limite
+- se raggiunge -5 dBFS senza risposta: salva non percepita
 
-Quindi il test parte a volume basso e aumenta nel tempo.
-
-## 5) dBFS e significato del risultato
-Il sistema salva il risultato in dBFS (non dBSPL assoluti), con:
-
-dBFS = 20 * log10(gain)
-
-Interpretazione:
-- valore vicino a 0 dBFS: e servito livello alto per percepire il suono
-- valore molto negativo: percezione avvenuta a livello basso
-
-Se il pulsante non viene premuto entro il limite (gain arrivato a 1.0), la frequenza viene marcata come non percepita con valore simbolico -100 dBFS.
-
-## 6) Macchina a stati del test (firmware attuale)
-La logica e gestita da TIM2 con interrupt periodico (100 ms circa):
-
-1. Riproduzione tono corrente
-- TIM4 + DAC + DMA attivi sulla frequenza corrente
-
-2. Attesa evento
-- se utente preme pulsante (PC13): salva risultato e ferma tono
-- altrimenti incrementa gain
-- se gain raggiunge il massimo: salva non percepita e ferma tono
-
-3. Pausa breve
-- pausa silenziosa tra due frequenze (circa 1 s)
-
-4. Avanzamento
-- passa alla frequenza successiva
-- reset gain al valore iniziale
+4. Pausa e avanzamento
+- invio `AUDIO STOP`
+- pausa di 2 s
+- frequenza successiva
 
 5. Fine test
-- dopo 7 frequenze, invio risultati su UART1 (115200 baud)
+- invio `AUDIO DONE`
+- stampa risultati su UART
 
-## 7) Configurazione periferiche coerente al progetto
-- DAC1 CH1: PA4, trigger TIM4 TRGO, DMA circular
-- TIM4: timer audio (scansione LUT)
-- TIM2: timer controllo (100 ms)
+## 7) Configurazione periferiche rilevanti
+- TIM2: timer di controllo (500 ms)
 - GPIO PC13: pulsante utente in EXTI falling
-- USART1: TX PB6, RX PB7, 115200 baud
+- USART1: 115200 baud (comunicazione con script PC)
 
-## 8) Limiti del prototipo
-- Misura relativa in dBFS, non clinica in dBSPL
-- Risultato dipendente da trasduttore audio, ambiente e calibrazione
-- Implementazione corrente su un solo orecchio
+Nota: il progetto mantiene anche la struttura DAC/TIM4/DMA nel codice, ma la modalita operativa attuale e PC audio (`USE_PC_AUDIO = 1`).
 
-## 9) Estensioni consigliate
-- Secondo ciclo per orecchio sinistro/destro (due array risultati)
-- Debounce software del pulsante
-- Classificazione finale automatica (es. nella media / attenzione)
-- Esportazione risultati in formato facilmente plottabile
-- Stadio analogico di uscita dedicato per pilotaggio cuffie/cassa in modo corretto
+## 8) Calibrazione didattica (procedura adottata)
+Poiche non e presente calibrazione metrologica in dB HL, si adotta una calibrazione didattica per rendere i risultati ripetibili.
 
-## 10) Conclusione
-Il firmware corrente realizza correttamente un audiometro didattico a soglia relativa:
-- genera toni alle frequenze previste
-- ricerca la soglia aumentando il gain
-- salva i risultati in dBFS
-- invia i dati via UART per analisi esterna
+### 8.1 Scopo
+Ottenere misure confrontabili nel tempo sullo stesso setup, senza pretesa clinica.
 
-Questa versione e coerente con il codice implementato e pronta come base di relazione tecnica.
+### 8.2 Condizioni fisse da mantenere
+- stesse cuffie
+- stesso PC/dispositivo audio
+- stessi parametri firmware
+- stesso volume di sistema
+- ambiente il piu possibile silenzioso
+- effetti audio software disattivati (EQ, enhancement, loudness)
+
+### 8.3 Procedura pratica
+1. Impostare il volume PC a un valore fisso (es. 25-35%).
+2. Eseguire un test di prova completo.
+3. Se molte frequenze risultano non percepite, aumentare di poco il volume (+5%).
+4. Se i toni risultano subito troppo forti, diminuire di poco il volume (-5%).
+5. Bloccare il volume scelto e non modificarlo piu durante le sessioni.
+6. Registrare questo setup come riferimento (profilo baseline).
+
+### 8.4 Interpretazione dei risultati
+I valori ottenuti sono relativi al setup scelto.
+Sono utili per confronto interno (sessione vs sessione), non per diagnosi clinica.
+
+## 9) Limiti del prototipo
+- misura relativa in dBFS, non clinica in dB HL/dBSPL
+- dipendenza da cuffie, volume PC e ambiente
+- un solo orecchio nella versione attuale
+
+## 10) Estensioni consigliate
+- doppio ciclo orecchio sinistro/destro
+- protocollo soglia tipo Hughson-Westlake (down 10 / up 5)
+- esportazione CSV e grafico automatico lato PC
+- debounce pulsante e controlli di affidabilita risposta
+
+## 11) Conclusione
+Il sistema attuale realizza correttamente un audiometro didattico con riproduzione su PC:
+- la scheda STM32 governa l'intera logica del test
+- il PC genera il suono in base ai comandi seriali
+- le soglie vengono salvate in dBFS e confrontate in modo ripetibile tramite calibrazione didattica.

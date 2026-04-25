@@ -2,7 +2,7 @@
 
 ## 1) Cosa fa questa modalita
 - STM32 esegue tutta la logica del test audiometrico.
-- STM32 invia comandi su UART (`AUDIO START`, `AUDIO GAIN`, `AUDIO STOP`).
+- STM32 invia comandi su UART con indicazione dell'orecchio (`AUDIO START L/R`, `AUDIO GAIN L/R`, `AUDIO STOP`).
 - Script Python su PC genera il suono con la scheda audio del computer.
 
 ## 2) Prerequisiti
@@ -38,15 +38,20 @@ In Windows controlla in Gestione dispositivi la porta COM della scheda (esempio 
 ## 6) Avvio script
 
 ```bash
-python pc_audio/pc_audio_player.py --port COM8 --baud 115200
+python pc_audio/pc_audio_player.py --port COM8 --baud 115200 --master-gain 0.10
 ```
 
 Sostituisci `COM8` con la tua porta reale.
 
+Il parametro `--master-gain` attenua globalmente il volume lato PC.
+Valori utili tipici: `0.05` (molto basso), `0.10` (consigliato), `0.20` (piu alto).
+
+Il test viene eseguito prima sull'orecchio sinistro e poi sul destro.
+
 ## 7) Uso durante il test
 - Avvia lo script Python.
 - Avvia il firmware STM32.
-- Lo script riproduce i toni quando riceve i comandi.
+- Lo script riproduce i toni quando riceve i comandi e li panora sul canale sinistro o destro secondo l'orecchio indicato.
 - Premi il pulsante su scheda quando senti il tono.
 
 ## 8) Troubleshooting rapido

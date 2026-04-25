@@ -4,16 +4,17 @@
   * @file    main.c
   * @brief   Audiometro base – B-L475E-IOT01A
   *
-  * COME FUNZIONA (versione semplificata, un solo orecchio):
+   * COME FUNZIONA (versione semplificata, due orecchi):
   *
   *  1. Viene generata una tabella (LUT) con i valori di una sinusoide.
   *  2. TIM4 scandisce la LUT tramite DMA → DAC → uscita analogica su PA4.
   *     Cambiando il periodo di TIM4 si cambia la frequenza del suono.
   *  3. TIM2 scatta ogni 100 ms e aumenta il volume (gain) poco alla volta.
-  *  4. Quando l'utente sente il suono, preme il pulsante (PC13).
-  *     Il valore di gain in quel momento viene salvato come risultato.
-  *  5. Si passa alla frequenza successiva e si ripete.
-  *  6. Alla fine i risultati vengono inviati al PC via UART (115200 baud).
+   *  4. Quando l'utente sente il suono, preme il pulsante (PC13).
+   *     Il valore di gain in quel momento viene salvato come risultato.
+   *  5. Si passa alla frequenza successiva e si ripete.
+   *  6. Terminato un orecchio, il test riparte sull'altro lato.
+   *  7. Alla fine i risultati vengono inviati al PC via UART (115200 baud).
   *
   ******************************************************************************
   */
@@ -38,11 +39,12 @@
 
 /* --- Parametri principali --- */
 #define N_SAMPLES    128     /* campioni nella LUT: più sono, più l'onda è precisa */
-#define N_FREQ       7       /* numero di frequenze testate                        */
-#define GAIN_START   0.05f   /* volume iniziale (quasi zero)                       */
-#define GAIN_STEP    0.02f   /* quanto aumenta il volume ad ogni tick di TIM2      */
-#define GAIN_MAX     1.0f    /* volume massimo (piena scala DAC)                   */
-#define PAUSE_TICKS  10      /* tick di pausa silenziosa tra una frequenza e l'altra (10 × 100ms = 1s) */
+#define N_EARS       2       /* orecchi testati: sinistro + destro                  */
+#define N_FREQ       11      /* numero di frequenze testate                        */
+#define START_DBFS   -70.0f  /* livello base abbassato per accomodare le alte frequenze */
+#define STEP_DBFS    0.5f    /* incremento ad ogni tick di TIM2 (dB)               */
+#define MAX_DBFS     -20.0f  /* limite massimo per sicurezza/ascolto confortevole  */
+#define PAUSE_TICKS  4       /* pausa tra frequenze (4 x 500ms = 2s)               */
 #define USE_PC_AUDIO 1       /* 1 = audio generato da script Python su PC via UART */
 
 /* USER CODE END PD */
@@ -64,7 +66,26 @@ UART_HandleTypeDef huart1;
 /* USER CODE BEGIN PV */
 
 /* Frequenze audiometriche standard in Hz */
-static const float FREQ[N_FREQ] = {125, 250, 500, 1000, 2000, 4000, 8000};
+static const float FREQ[N_FREQ] = {125, 250, 500, 750, 1000, 1500, 2000, 3000, 4000, 6000, 8000};
+static const char EAR_LABEL[N_EARS] = {'L', 'R'};
+
+/* Compensazione didattica del livello inziale per frequenza (dB)
+  Adattate ai risultati misurati (circa 5 dB prima della soglia misurata):
+  125:-35.5, 250:-48.5, 500:-54.5, 750:-59.0, 1000:-60.0
+  1500:-60.5, 2000:-62.0, 3000:-61.5, 4000:-63.0, 6000:-61.5, 8000:-61.0 */
+static const float START_OFFSET_DB[N_FREQ] = {
+  +29.5f,  /* 125  Hz: soglia -35.5, start = -70 + 29.5 = -40.5 */
+  +16.5f,  /* 250  Hz: soglia -48.5, start = -70 + 16.5 = -53.5 */
+  +10.5f,  /* 500  Hz: soglia -54.5, start = -70 + 10.5 = -59.5 */
+  +6.0f,   /* 750  Hz: soglia -59.0, start = -70 +  6.0 = -64.0 */
+  +5.0f,   /* 1000 Hz: soglia -60.0, start = -70 +  5.0 = -65.0 */
+  +4.5f,   /* 1500 Hz: soglia -60.5, start = -70 +  4.5 = -65.5 */
+  +3.0f,   /* 2000 Hz: soglia -62.0, start = -70 +  3.0 = -67.0 */
+  +3.5f,   /* 3000 Hz: soglia -61.5, start = -70 +  3.5 = -66.5 */
+  +2.0f,   /* 4000 Hz: soglia -63.0, start = -70 +  2.0 = -68.0 */
+  +3.5f,   /* 6000 Hz: soglia -61.5, start = -70 +  3.5 = -66.5 */
+  +4.0f    /* 8000 Hz: soglia -61.0, start = -70 +  4.0 = -66.0 */
+};
 
 /* LUT: valori della sinusoide a piena scala (0..4095) */
 static uint16_t lut[N_SAMPLES];
@@ -74,14 +95,16 @@ static uint16_t lut[N_SAMPLES];
 static uint16_t dac_buf[2 * N_SAMPLES];
 
 /* --- Stato del test --- */
+static int   ear_idx      = 0;      /* orecchio corrente: 0=L, 1=R                     */
 static int   freq_idx     = 0;      /* quale frequenza stiamo testando ora */
-static float gain         = GAIN_START;
+static float current_dbfs = START_DBFS;
+static float gain         = 0.0f;
 static int   pause_cnt    = 0;
 static int   test_done    = 0;
 static volatile uint8_t btn_pressed = 0;  /* settato dall'interrupt del pulsante */
 
 /* Risultati: gain al momento della pressione, poi convertito in dBFS */
-static float results[N_FREQ];
+static float results[N_EARS][N_FREQ];
 
 /* USER CODE END PV */
 
@@ -96,11 +119,14 @@ static void MX_TIM4_Init(void);
 /* USER CODE BEGIN PFP */
 static void build_lut(void);
 static void fill_dac_buf(int half);
-static void start_tone(float freq);
+static void start_tone(float freq, char ear);
 static void stop_tone(void);
 static void send_results(void);
-static void pc_audio_set_gain(float new_gain);
+static void pc_audio_set_gain(float new_gain, char ear);
 static void uart_send_line(const char *fmt, ...);
+static float dbfs_to_gain(float dbfs);
+static void set_level_for_current_freq(void);
+static char current_ear(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -142,6 +168,35 @@ static void uart_send_line(const char *fmt, ...)
   HAL_UART_Transmit(&huart1, (uint8_t *)line, len, HAL_MAX_DELAY);
 }
 
+static float dbfs_to_gain(float dbfs)
+{
+  float linear = powf(10.0f, dbfs / 20.0f);
+  if (linear < 0.0f)
+  {
+    linear = 0.0f;
+  }
+  if (linear > 1.0f)
+  {
+    linear = 1.0f;
+  }
+  return linear;
+}
+
+static void set_level_for_current_freq(void)
+{
+  current_dbfs = START_DBFS + START_OFFSET_DB[freq_idx];
+  if (current_dbfs > MAX_DBFS)
+  {
+    current_dbfs = MAX_DBFS;
+  }
+  gain = dbfs_to_gain(current_dbfs);
+}
+
+static char current_ear(void)
+{
+  return EAR_LABEL[ear_idx];
+}
+
 /*
  * fill_dac_buf
  * Copia una metà del buffer DMA moltiplicando ogni campione per il gain.
@@ -171,10 +226,10 @@ static void fill_dac_buf(int half)
  *   f_audio = SystemCoreClock / (ARR+1) / N_SAMPLES
  * Quindi:  ARR = SystemCoreClock / (f_audio * N_SAMPLES) - 1
  */
-static void start_tone(float freq)
+static void start_tone(float freq, char ear)
 {
 #if USE_PC_AUDIO
-  uart_send_line("AUDIO START %.1f %.3f\r\n", freq, gain);
+  uart_send_line("AUDIO START %c %.1f %.3f\r\n", ear, freq, gain);
 #else
     uint32_t arr = (uint32_t)(SystemCoreClock / (freq * N_SAMPLES)) - 1;
     __HAL_TIM_SET_AUTORELOAD(&htim4, arr);
@@ -204,10 +259,10 @@ static void stop_tone(void)
 #endif
 }
 
-static void pc_audio_set_gain(float new_gain)
+static void pc_audio_set_gain(float new_gain, char ear)
 {
 #if USE_PC_AUDIO
-  uart_send_line("AUDIO GAIN %.3f\r\n", new_gain);
+  uart_send_line("AUDIO GAIN %c %.3f\r\n", ear, new_gain);
 #else
   (void)new_gain;
 #endif
@@ -226,12 +281,18 @@ static void send_results(void)
     HAL_UART_Transmit(&huart1,
         (uint8_t *)"=== Risultati Audiometria ===\r\n", 31, HAL_MAX_DELAY);
 
+  for (int e = 0; e < N_EARS; e++)
+    {
+    int len = snprintf(line, sizeof(line), "Orecchio %c\r\n", EAR_LABEL[e]);
+    HAL_UART_Transmit(&huart1, (uint8_t *)line, len, HAL_MAX_DELAY);
+
     for (int i = 0; i < N_FREQ; i++)
     {
-        int len = snprintf(line, sizeof(line),
-            "Freq %4.0f Hz → %.1f dBFS\r\n",
-            FREQ[i], results[i]);
-        HAL_UART_Transmit(&huart1, (uint8_t *)line, len, HAL_MAX_DELAY);
+      len = snprintf(line, sizeof(line),
+        "Freq %4.0f Hz → %.1f dBFS\r\n",
+        FREQ[i], results[e][i]);
+      HAL_UART_Transmit(&huart1, (uint8_t *)line, len, HAL_MAX_DELAY);
+    }
     }
 }
 
@@ -276,8 +337,9 @@ int main(void)
   /* USER CODE BEGIN 2 */
 
     build_lut();
+    set_level_for_current_freq();
     uart_send_line("AUDIO MODE PC\r\n");
-    start_tone(FREQ[freq_idx]);
+    start_tone(FREQ[freq_idx], current_ear());
     HAL_TIM_Base_Start_IT(&htim2);  /* avvia il timer di controllo */
 
   /* USER CODE END 2 */
@@ -412,7 +474,7 @@ static void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 7999;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 999;
+  htim2.Init.Period = 4999;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -577,7 +639,7 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 /* all'inizio del callback, dentro USER CODE BEGIN 4 */
 /*
- * HAL_TIM_PeriodElapsedCallback  –  chiamata ogni 100ms da TIM2
+ * HAL_TIM_PeriodElapsedCallback  –  chiamata ogni 500ms da TIM2
  *
  * Gestisce tre situazioni:
  *  1. Pulsante premuto → salva il risultato, avvia la pausa
@@ -594,27 +656,27 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         if (btn_pressed)
         {
             /* L'utente ha sentito il suono: salva gain come dBFS */
-            results[freq_idx] = 20.0f * log10f(gain);
+          results[ear_idx][freq_idx] = current_dbfs;
             stop_tone();
             btn_pressed = 0;
             pause_cnt   = 1;  /* inizia la pausa */
         }
         else
         {
-            /* Nessuna risposta: aumenta il volume */
-            gain += GAIN_STEP;
-          if (gain > GAIN_MAX)
-          {
-            gain = GAIN_MAX;
-          }
-          pc_audio_set_gain(gain);
+            /* Nessuna risposta: aumenta il livello con step costante in dB */
+            current_dbfs += STEP_DBFS;
 
-            if (gain >= GAIN_MAX)
+            if (current_dbfs >= MAX_DBFS)
             {
                 /* Frequenza non percepita */
-                results[freq_idx] = -100.0f;
+                results[ear_idx][freq_idx] = -100.0f;
                 stop_tone();
                 pause_cnt = 1;
+            }
+            else
+            {
+              gain = dbfs_to_gain(current_dbfs);
+              pc_audio_set_gain(gain, current_ear());
             }
         }
     }
@@ -629,12 +691,22 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
             if (freq_idx >= N_FREQ)
             {
-                test_done = 1;  /* tutte le frequenze completate */
+            ear_idx++;
+            if (ear_idx >= N_EARS)
+            {
+              test_done = 1;  /* tutte le frequenze completate per entrambi gli orecchi */
             }
             else
             {
-                gain = GAIN_START;
-                start_tone(FREQ[freq_idx]);
+              freq_idx = 0;
+              set_level_for_current_freq();
+              start_tone(FREQ[freq_idx], current_ear());
+            }
+            }
+            else
+            {
+            set_level_for_current_freq();
+            start_tone(FREQ[freq_idx], current_ear());
             }
         }
     }
