@@ -4,7 +4,7 @@
   * @file    main.c
   * @brief   Audiometro base – B-L475E-IOT01A
   *
-   * COME FUNZIONA (versione semplificata, due orecchi):
+   * COME FUNZIONA (versione semplificata, due orecchie):
   *
   *  1. Viene generata una tabella (LUT) con i valori di una sinusoide.
   *  2. TIM4 scandisce la LUT tramite DMA → DAC → uscita analogica su PA4.
@@ -39,7 +39,7 @@
 
 /* --- Parametri principali --- */
 #define N_SAMPLES    128     /* campioni nella LUT: più sono, più l'onda è precisa */
-#define N_EARS       2       /* orecchi testati: sinistro + destro                  */
+#define N_EARS       2       /* orecchie testate: sinistro + destro                  */
 #define N_FREQ       11      /* numero di frequenze testate                        */
 #define START_DBFS   -70.0f  /* livello base abbassato per accomodare le alte frequenze */
 #define STEP_DBFS    0.5f    /* incremento ad ogni tick di TIM2 (dB)               */

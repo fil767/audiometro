@@ -46,6 +46,12 @@ Sostituisci `COM8` con la tua porta reale.
 Il parametro `--master-gain` attenua globalmente il volume lato PC.
 Valori utili tipici: `0.05` (molto basso), `0.10` (consigliato), `0.20` (piu alto).
 
+Opzionale: puoi scegliere la cartella di salvataggio risultati.
+
+```bash
+python pc_audio/pc_audio_player.py --port COM8 --results-dir pc_audio/results
+```
+
 Il test viene eseguito prima sull'orecchio sinistro e poi sul destro.
 
 ## 7) Uso durante il test
@@ -53,6 +59,18 @@ Il test viene eseguito prima sull'orecchio sinistro e poi sul destro.
 - Avvia il firmware STM32.
 - Lo script riproduce i toni quando riceve i comandi e li panora sul canale sinistro o destro secondo l'orecchio indicato.
 - Premi il pulsante su scheda quando senti il tono.
+
+## 9) Salvataggio ed elaborazione automatica risultati
+- A fine test (dopo i risultati di entrambi gli orecchi), lo script salva automaticamente:
+	- un file JSON con risultati grezzi, statistiche sintetiche e interpretazione automatica
+- Cartella di default: `pc_audio/results`
+- In console viene stampato un riepilogo rapido con media L, media R, media `|L-R|` e verdetto.
+
+Nel JSON trovi anche una sezione `interpretation` con:
+- simmetria L/R (classe qualitativa + frequenze con differenza alta)
+- profilo spettrale (basse vs medio-alte)
+- stabilita (deviazione standard e pendenza su frequenza)
+- verdetto testuale finale
 
 ## 8) Troubleshooting rapido
 - Nessun suono: verifica volume output PC e dispositivo audio predefinito.
